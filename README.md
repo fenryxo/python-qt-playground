@@ -10,3 +10,8 @@ python3 -m venv venv
 python3 -m pip install -U pip setuptools
 python3 -m pip install -U -r requirements.txt
 ```
+
+Examples
+--------
+
+* `python3 -m helloapp` - A simple hello app using QML.
