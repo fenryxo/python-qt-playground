@@ -1,3 +1,4 @@
 pyside2
 PyOpenGL
 PyOpenGL-accelerate
+vulkan
