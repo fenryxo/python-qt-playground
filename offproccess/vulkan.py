@@ -15,6 +15,9 @@ DeviceInfo = namedtuple('DeviceInfo', 'device, properties, features, queues, ext
 VK_KHR_EXTERNAL_MEMORY_CAPABILITIES = 'VK_KHR_external_memory_capabilities'
 VK_KHR_EXTERNAL_MEMORY = 'VK_KHR_external_memory'
 VK_KHR_EXTERNAL_MEMORY_FD = 'VK_KHR_external_memory_fd'
+VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES = 'VK_KHR_external_semaphore_capabilities'
+VK_KHR_EXTERNAL_SEMAPHORE = 'VK_KHR_external_semaphore'
+VK_KHR_EXTERNAL_SEMAPHORE_FD = 'VK_KHR_external_semaphore_fd'
 
 
 class Device:
@@ -27,6 +30,7 @@ class Device:
         app_name: Application name.
         debug: Enable Vulkan debugging.
     """
+
     def __init__(self, app_name: str, debug: bool = False):
         self.debug = debug
         self.vk_instance = None
@@ -40,6 +44,7 @@ class Device:
         self._initialize_device(device)
         print('vk device created')
         self._vkGetMemoryFdKHR = None
+        self._vkGetSemaphoreFdKHR = None
 
     def __del__(self):
         if self.vk_device is not None:
@@ -59,7 +64,9 @@ class Device:
         Returns:
             True if the device could be used, False otherwise.
         """
-        return info.queues.graphics is not None and VK_KHR_EXTERNAL_MEMORY_FD in info.extensions
+        return (info.queues.graphics is not None
+                and VK_KHR_EXTERNAL_MEMORY_FD in info.extensions
+                and VK_KHR_EXTERNAL_SEMAPHORE_FD in info.extensions)
 
     def create_shared_image_memory(self, width: int, height: int) -> 'SharedImageMemory':
         """
@@ -78,6 +85,9 @@ class Device:
             A wrapper around shared image memory.
         """
         return SharedImageMemory(self, width, height)
+
+    def create_shared_semaphore(self) -> 'SharedSemaphore':
+        return SharedSemaphore(self)
 
     def find_memory_type(self, type_bits, property_flags) -> Optional[int]:
         """
@@ -129,7 +139,7 @@ class Device:
             layers = []
         create_info = vk.VkInstanceCreateInfo(
             pApplicationInfo=app_info,
-            ppEnabledExtensionNames=[VK_KHR_EXTERNAL_MEMORY_CAPABILITIES],
+            ppEnabledExtensionNames=[VK_KHR_EXTERNAL_MEMORY_CAPABILITIES, VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES],
             ppEnabledLayerNames=layers
         )
         self.vk_instance = vk.vkCreateInstance(create_info, None)
@@ -184,11 +194,12 @@ class Device:
         create_info = vk.VkDeviceCreateInfo(
             pQueueCreateInfos=[queue_create_info],
             pEnabledFeatures=device_features,
-            ppEnabledExtensionNames=[VK_KHR_EXTERNAL_MEMORY, VK_KHR_EXTERNAL_MEMORY_FD],
+            ppEnabledExtensionNames=[VK_KHR_EXTERNAL_MEMORY, VK_KHR_EXTERNAL_MEMORY_FD,
+                                     VK_KHR_EXTERNAL_SEMAPHORE, VK_KHR_EXTERNAL_SEMAPHORE_FD],
         )
         self._memory_properties = vk.vkGetPhysicalDeviceMemoryProperties(info.device)
         self.device_info = info
-        self.vk_device =  vk.vkCreateDevice(info.device, create_info, None)
+        self.vk_device = vk.vkCreateDevice(info.device, create_info, None)
 
     def _load_vk_get_memory_fd_proc(self):
         """Load vkGetMemoryFdKHR procedure."""
@@ -196,6 +207,15 @@ class Device:
         if not proc:
             raise VulkanException('Cannot load vkGetMemoryFdKHR.')
         self._vkGetMemoryFdKHR = proc
+
+    def load_vk_get_semaphore_fd_proc(self):
+        """Load vkGetSemaphoreFdKHR procedure."""
+        if self._vkGetSemaphoreFdKHR is None:
+            proc = vk.vkGetDeviceProcAddr(self.vk_device, 'vkGetSemaphoreFdKHR')
+            if not proc:
+                raise VulkanException('Cannot load vkGetSemaphoreFdKHR.')
+            self._vkGetSemaphoreFdKHR = proc
+        return self._vkGetSemaphoreFdKHR
 
 
 class SharedImageMemory:
@@ -212,6 +232,7 @@ class SharedImageMemory:
         size: Memory size.
         fd: Memory fd.
     """
+
     def __init__(self, device: Device, width: int, height: int):
         self.height = height
         self.width = width
@@ -289,3 +310,50 @@ class SharedImageMemory:
 
         self.fd = self.device.get_fd_for_memory(self.vk_image_memory)
         print(f'vk vk_image_memory fd {self.fd} obtained')
+
+
+class SharedSemaphore:
+    """
+    Wrapper around Vulkan shared semaphore.
+
+    Use `fd` to import it in OpenGL. See `glGenSemaphoresEXT` and `glSemaphoreParameterui64vEXT`.
+
+    Properties:
+        fd: Memory fd.
+    """
+
+    def __init__(self, device: Device):
+        self.device = device
+        self.vk_semaphore = None
+        self.fd = None
+
+        self._create_semaphore()
+        self._get_fd()
+
+    def _create_semaphore(self):
+        export_create_info = vk.VkExportSemaphoreCreateInfo(
+            handleTypes=vk.VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+        )
+        create_info = vk.VkSemaphoreCreateInfo(
+            pNext=export_create_info,
+        )
+        self.vk_semaphore = vk.vkCreateSemaphore(self.device.vk_device, create_info, None)
+        print(f'vk vk_semaphore created')
+
+    def _get_fd(self):
+        get_fd_info = vk.VkSemaphoreGetFdInfoKHR(
+            pNext=None,
+            semaphore=self.vk_semaphore,
+            handleType=vk.VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT
+        )
+        proc = self.device.load_vk_get_semaphore_fd_proc()
+        self.fd = proc(self.device.vk_device, get_fd_info)
+        print(f'vk vk_semaphore fd {self.fd} obtained')
+
+    def __del__(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            print(f'vk vk_semaphore fd {self.fd} closed')
+        if self.vk_semaphore is not None:
+            vk.vkDestroySemaphore(self.device.vk_device, self.vk_semaphore, None)
+            print(f'vk vk_semaphore destroyed')
