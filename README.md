@@ -19,3 +19,7 @@ Examples
   In order to get focus, you need to click the content of *View* and *Web* tabs, then focus another
   window and finally click back. It also segfaults on window close.
 * `python -m offproccess` - Work-in-progress offproccess rendering.
+* IPC:
+  * `python3 -m ipc listen addr` - file writer server on abstract Unix domain socket address `addr`.
+  * `python3 -m ipc write addr /tmp/file1 /tmp/file2` - file writer client sends a file descriptors
+    of passed files and data to be written by the server.
